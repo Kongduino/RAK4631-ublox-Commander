@@ -41,6 +41,16 @@ unsigned char CFGPRT[2] = {0x06, 0x00};
 unsigned char CFGDAT[2] = {0x06, 0x06};
 unsigned char CFGNMEA[2] = {0x06, 0x17};
 unsigned char CFGRST[2] = {0x06, 0x04};
+unsigned char CFGRATE[2] = {0x06, 0x08};
+
+unsigned char ONEBYTE[9] = {
+  0xB5, 0x62, // µb
+  0x00, 0x00, // Class, ID
+  0x01, 0x00, // 1 byte payload
+  0x00, // payload
+  0x00, 0x00 // checksum
+};
+
 
 template class basic_string<char>; // https://github.com/esp8266/Arduino/issues/1136
 // Required or the code won't compile!
@@ -56,12 +66,14 @@ void __throw_out_of_range_fmt(char const*, ...) {}
 #include <Arduino.h>
 #include "/Users/dda/Library/Arduino15/packages/rakwireless/hardware/nrf52/1.0.1/libraries/Adafruit_TinyUSB_Arduino/src/Adafruit_TinyUSB.h"
 #include "Utilities.h"
+#include <Wire.h> //Needed for I2C to GNSS
+#include <SparkFun_u-blox_GNSS_Arduino_Library.h> //Click here to get the library: http://librarymanager/All#SparkFun_u-blox_GNSS
+SFE_UBLOX_GNSS myGNSS;
 
 uint8_t ix = 0;
 vector<string> userStrings;
 char UTC[7] = {0};
 uint8_t SIV = 0;
-
 float latitude, longitude;
 
 float parseDegrees(const char *term) {
@@ -231,6 +243,23 @@ void setup() {
   Serial1.begin(9600);
   delay(100);
   Serial.println("Serial1 ready!");
+
+  Wire.begin();
+  if (myGNSS.begin() == false) {
+    Serial.println(F("u-blox GNSS not detected at default I2C address. Please check wiring. Freezing."));
+    while (1)
+      ;
+  }
+
+  myGNSS.enableNMEAMessage(UBX_NMEA_GLL, COM_PORT_UART1);
+  //Several of these are on by default on ublox board so let's disable them
+  myGNSS.enableNMEAMessage(UBX_NMEA_GSA, COM_PORT_UART1);
+  myGNSS.enableNMEAMessage(UBX_NMEA_GSV, COM_PORT_UART1);
+  myGNSS.enableNMEAMessage(UBX_NMEA_RMC, COM_PORT_UART1);
+  myGNSS.enableNMEAMessage(UBX_NMEA_GGA, COM_PORT_UART1);
+  //Only leaving GGA & VTG enabled at current navigation rate
+  myGNSS.enableNMEAMessage(UBX_NMEA_VTG, COM_PORT_UART1);
+
   delay(1000);
   SendCmd0B(MONVER[0], MONVER[1], (char*)"MON-VER");
 }
@@ -252,11 +281,17 @@ bool isItB562() {
       for (i = 0; i < len; i++) B562[posx++] = Serial1.read();
     B562[posx++] = Serial1.read(); // CK_A
     B562[posx++] = Serial1.read(); // CK_B
-    Serial.println("B562:");
-    hexDump((unsigned char*)B562, posx);
     if (B562[0] == 0x05) handleACK();
-    if (B562[0] == MONGNSS[0] && B562[1] == MONGNSS[1]) handleMONGNSS();
-    if (B562[0] == CFGDAT[0] && B562[1] == CFGDAT[1]) F0x060x06();
+    else if (B562[0] == MONGNSS[0] && B562[1] == MONGNSS[1]) handleMONGNSS();
+    else if (B562[0] == CFGDAT[0] && B562[1] == CFGDAT[1]) F0x060x06();
+    else if (B562[0] == CFGPRT[0] && B562[1] == CFGPRT[1]) F0x060x00();
+    else if (B562[0] == CFGRATE[0] && B562[1] == CFGRATE[1]) F0x060x08();
+    else if (B562[0] == MONVER[0] && B562[1] == MONVER[1]) F0x0a0x04();
+    else if (B562[0] == CFGNMEA[0] && B562[1] == CFGNMEA[1]) F0x060x17();
+    else {
+      Serial.println("B562:");
+      hexDump((unsigned char*)B562, posx);
+    }
     return true;
   }
   return false;
@@ -278,8 +313,6 @@ void loop() {
     incoming[posx] = 0;
     if (incoming[0] == '/') {
       // / command
-      Serial.print("> ");
-      Serial.println(incoming + 1);
       std::map<string, void (*)()>::iterator it;
       it = commands.find(string(incoming));
       if (it == commands.end()) {

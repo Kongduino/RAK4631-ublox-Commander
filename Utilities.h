@@ -14,6 +14,17 @@ void sendCFGGNSS();
 void sendMONGNSS();
 void sendCFGNMEA();
 void sendBDSON();
+void sendCFGPRTx(uint8_t);
+void sendCFGPRT0();
+void sendCFGPRT1();
+void sendCFGPRT2();
+void sendCFGPRT3();
+void sendCFGPRT4();
+void sendCFGRATE();
+void F0x060x00();
+void F0x060x06();
+void F0x060x08();
+void F0x0a0x04();
 
 void showHelp();
 
@@ -28,16 +39,29 @@ std::map<string, void (*)()> commands;
 #define BeidouSup 4
 #define GalileoSup 8
 
+uint16_t readUint16(char *ptr) {
+  return (ptr[0] | ptr[1] << 8);
+}
+
+uint32_t readUint32(char *ptr) {
+  return (ptr[0] | ptr[1] << 8 | ptr[1] << 16 | ptr[1] << 24);
+}
+
 void initCommands() {
   commands["/MON-VER"] = &sendMONVER;
   commands["/CFG-NAVX5"] = &sendNAVX5;
   commands["/CFG-PRT"] = &sendCFGPRT;
+  commands["/CFG-PRT 0"] = &sendCFGPRT0;
+  commands["/CFG-PRT 1"] = &sendCFGPRT1;
+  commands["/CFG-PRT 2"] = &sendCFGPRT2;
+  commands["/CFG-PRT 3"] = &sendCFGPRT3;
+  commands["/CFG-PRT 4"] = &sendCFGPRT4;
   commands["/CFG-DAT"] = &sendCFGDAT;
   commands["/MON-GNSS"] = &sendMONGNSS;
   commands["/CFG-GNSS"] = &sendCFGGNSS;
-  commands["/BDS-GNSS"] = &sendCFGGNSS;
   commands["/CFG-NMEA"] = &sendCFGNMEA;
   commands["/BDS ON"] = &sendBDSON;
+  commands["/CFG-RATE"] = &sendCFGRATE;
 
   commands["/?"] = &showHelp;
 }
@@ -156,6 +180,43 @@ void sendCFGPRT() {
   SendCmd0B(CFGPRT[0], CFGPRT[1], (char*)"CFG-PRT");
 }
 
+void sendCFGRATE() {
+  SendCmd0B(CFGRATE[0], CFGRATE[1], (char*)"CFG-RATE");
+}
+
+void sendCFGPRTx(uint8_t port) {
+  ONEBYTE[2] = CFGPRT[0];
+  ONEBYTE[3] = CFGPRT[1];
+  ONEBYTE[6] = port;
+  Fletcher(ONEBYTE, 7);
+  Serial.print("Sending CFG-PRT ");
+  Serial.print(port);
+  Serial.println(" command:");
+  hexDump(ONEBYTE, 9);
+  Serial1.write((char *)ONEBYTE, 9);
+  delay(100);
+}
+
+void sendCFGPRT0() {
+  sendCFGPRTx(0);
+}
+
+void sendCFGPRT1() {
+  sendCFGPRTx(1);
+}
+
+void sendCFGPRT2() {
+  sendCFGPRTx(2);
+}
+
+void sendCFGPRT3() {
+  sendCFGPRTx(3);
+}
+
+void sendCFGPRT4() {
+  sendCFGPRTx(4);
+}
+
 void sendCFGDAT() {
   SendCmd0B(CFGDAT[0], CFGDAT[1], (char*)"CFG-DAT");
 }
@@ -192,9 +253,26 @@ void showHelp() {
   }
 }
 
+void enableConstellation(uint8_t constellation) {
+  CFGGNSS[constellation] = 1;
+  Fletcher(CFGGNSS, 68);
+  Serial.println("Sending CFG-GNSS command:");
+  hexDump(CFGGNSS, 68);
+  Serial1.write((char *)CFGGNSS, 68);
+  delay(100);
+}
+
+void sendBDSON() {
+  enableConstellation(beidouOffset);
+  delay(1000);
+  MONGNSS[9] |= BeidouSup;
+  sendMONGNSS();
+  delay(100);
+}
+
 void F0x060x06() {
   Serial.println("CFG-DAT");
-  uint16_t ln = (uint16_t)B562[2];
+  uint16_t ln = readUint16(&B562[2]);
   Serial.println(" . Payload length: " + String(ln));
   if (ln != 52) {
     Serial.println(" . Wrong Payload length");
@@ -202,10 +280,10 @@ void F0x060x06() {
   }
 
   uint8_t ix = 4; // Offset
-  uint16_t dn = (uint16_t)B562[ix];
+  uint16_t dn = readUint16(&B562[ix]);
   sprintf(infoText, " . Datum Number: %d\n", dn);
   Serial.print(infoText);
-  sprintf(infoText, " . Datum name: %s\n", &B562[ix + 2]);
+  sprintf(infoText, " . Datum name: %s\n", B562[ix + 2]);
   Serial.print(infoText);
 
   double R8 = (double)B562[ix + 8];
@@ -243,19 +321,197 @@ void F0x060x06() {
   sprintf(infoText, " . scale: %.2f\n", R4);
 }
 
-void enableConstellation(uint8_t constellation) {
-  CFGGNSS[constellation] = 1;
-  Fletcher(CFGGNSS, 68);
-  Serial.println("Sending CFG-GNSS command:");
-  hexDump(CFGGNSS, 68);
-  Serial1.write((char *)CFGGNSS, 68);
-  delay(100);
+void F0x060x00() {
+  Serial.println("CFG-PRT");
+  uint16_t ln = readUint16(&B562[2]);
+  Serial.println(" . Payload length: " + String(ln));
+  if (ln != 20) {
+    Serial.println(" . Wrong Payload length");
+    return;
+  }
+
+  uint8_t ix = 4; // Offset
+  uint8_t PortID = B562[ix];
+  Serial.println(" . Port ID: " + String(PortID));
+  // 1: reserved
+
+  uint16_t bf16 = readUint16(&B562[ix + 2]); // 2: txReady
+  // txReady
+  if ((bf16 & 1) == 0) {
+    // bit 1: en[able]
+    Serial.println(" . TX disabled");
+  } else {
+    Serial.println(" . TX enabled");
+    uint16_t z = bf16 & 2;
+    if (z == 0) {
+      Serial.println(" . Polarity: High-active");
+    } else {
+      Serial.println(" . Polarity: Low-active");
+    }
+    z = (bf16 & 2) >> 0b11111;
+    Serial.println(" . PIN: " + String(z));
+    z = (bf16 & 7) >> 0b111111111;
+    Serial.println(" . Threshold: " + String(z) + " x 8 = " + String(z * 8));
+    if (PortID == 1 || PortID == 2) {
+      uint32_t bf32 = readUint32(&B562[ix + 4]); // 4: mode
+      z = (bf32 & 6) >> 0b11;
+      Serial.println(" . Char Len: " + String(z + 3));
+      z = (bf32 & 9) >> 0b111;
+      if (z == 0) {
+        Serial.println(" . Even Parity");
+      } else if (z == 1) {
+        Serial.println(" . Odd Parity");
+      } else if (z & 0b110 == 6) {
+        Serial.println(" . No Parity");
+      } else if (z & 0b010 == 2) {
+        Serial.println(" . [Parity] Reserved");
+      } else {
+        Serial.println(" . [Parity] This should not happen");
+      }
+      z = (bf32 & 12) >> 0b11 * 5 + 10;
+      sprintf(infoText, " . Stop bits: %3.1f", (z / 10));
+      Serial.println(infoText);
+      bf32 = readUint32(&B562[ix + 8]); // 8: baudRate
+      Serial.println(" . Bauds/sec: " + String(bf32));
+    }
+    bf16 = readUint16(&B562[ix + 12]); // 12: inProtoMask
+    Serial.println(" . Input protocols:");
+    if ((bf16 & 1) == 1) Serial.println("  -> UBlox");
+    if ((bf16 & 2) == 2) Serial.println("  -> NMEA");
+    if ((bf16 & 4) == 4) Serial.println("  -> RTCM");
+    bf16 = readUint16(&B562[ix + 14]); // 14: outProtoMask
+    Serial.println(" . Output protocols:");
+    if ((bf16 & 1) == 1) Serial.println("  -> UBlox");
+    if ((bf16 & 2) == 2) Serial.println("  -> NMEA");
+    if (PortID == 1 || PortID == 2) {
+      bf16 = readUint16(&B562[ix + 16]); // 16: flags
+      if ((bf16 & 2) == 2) Serial.println(" . Extended Tx Timeout");
+    }
+  }
 }
 
-void sendBDSON() {
-  enableConstellation(beidouOffset);
-  delay(1000);
-  MONGNSS[9] |= BeidouSup;
-  sendMONGNSS();
-  delay(100);
+void F0x060x08() {
+  Serial.println("CFG-RATE");
+  uint16_t ln = readUint16(&B562[2]);
+  Serial.println(" . Payload length: " + String(ln));
+  if (ln != 6) {
+    Serial.println(" . Wrong Payload length");
+    return;
+  }
+  uint8_t ix = 4; // Offset
+  uint16_t z = readUint16(&B562[ix]); // 0: measRate
+  sprintf(infoText, " . Measurement rate: %d ms", z);
+  Serial.println(infoText);
+
+  z = readUint16(&B562[ix + 2]); // 2: navRate
+  if (z < 2) Serial.println(" . Navigation rate: " + String(z) + " cycle");
+  else Serial.println(" . Navigation rate: " + String(z) + " cycles");
+
+  z = readUint16(&B562[ix + 4]); // 4: timeRef
+  if (z == 0) Serial.println(" . Reference time: UTC time");
+  else Serial.println(" . Reference time: GPS time");
+}
+
+void F0x0a0x04() {
+  Serial.println("MON-VER");
+  uint16_t ln = readUint16(&B562[2]);
+  Serial.println(" . Payload length: " + String(ln));
+  uint8_t headerLength = 40;
+  uint8_t nb = ln / headerLength;
+  uint16_t ln0 = headerLength + nb * 30;
+  Serial.println(" . numBlocks: " + String(nb));
+  if (ln != ln0) {
+    Serial.println(" . Wrong Payload length");
+    return;
+  }
+  uint8_t ix = 4; // Offset
+  memset(infoText, 0, 40);
+  memcpy(infoText, B562 + ix, 30);
+  Serial.print("swVersion: ");
+  Serial.println(infoText);
+  ix += 30;
+  memset(infoText, 0, 40);
+  memcpy(infoText, B562 + ix, 10);
+  Serial.print("hwVersion: ");
+  Serial.println(infoText);
+  ix += 10;
+  for (uint8_t i = 0; i < nb; i++) {
+    memset(infoText, 0, 40);
+    memcpy(infoText, B562 + ix, 30);
+    Serial.print("extension ");
+    Serial.print(i);
+    Serial.print(": ");
+    Serial.println(infoText);
+    ix += 30;
+  }
+}
+
+void F0x060x17() {
+  Serial.print("CFG-NMEA");
+
+  uint16_t ln = readUint16(&B562[2]);
+  Serial.println(" . Payload length: " + String(ln));
+  if (ln != 4) {
+    Serial.println(" . Wrong Payload length");
+    hexDump((unsigned char*)B562, ln + 2);
+    return;
+  }
+  uint8_t ix = 4; // Offset
+  uint8_t bf8 = B562[ix]; // 0: filter
+  uint8_t z = bf8 & 0b000001;
+  if (z == 0) {
+    Serial.print(" . Position filtering enabled");
+  } else {
+    Serial.print(" . Position filtering disabled");
+  }
+
+  z = bf8 & 0b000010;
+  if (z == 0) {
+    Serial.print(" . Masked position filtering enabled");
+  } else {
+    Serial.print(" . Masked position filtering disabled");
+  }
+
+  z = bf8 & 0b000100;
+  if (z == 0) {
+    Serial.print(" . Time filtering enabled");
+  } else {
+    Serial.print(" . Time filtering disabled");
+  }
+
+  z = bf8 & 0b001000;
+  if (z == 0) {
+    Serial.print(" . Date filtering enabled");
+  } else {
+    Serial.print(" . Date filtering disabled");
+  }
+
+  z = bf8 & 0b010000;
+  if (z == 0) {
+    Serial.print(" . SBAS filtering enabled");
+  } else {
+    Serial.print(" . SBAS filtering disabled");
+  }
+
+  z = bf8 & 0b100000;
+  if (z == 0) {
+    Serial.print(" . Track filtering enabled");
+  } else {
+    Serial.print(" . Track filtering disabled");
+  }
+
+  z = B562[ix + 1]; // 1: version
+  Serial.println(" . Version: " + String(z, HEX));
+
+  z = B562[ix + 2]; // 1: numSV
+  Serial.println(" . Maximum number of SV: " + String(z, HEX));
+
+  bf8 = B562[ix + 3]; // 0: flags
+  z = bf8 & 0b01;
+  if (z == 1) {
+    Serial.print(" . Compat mode enabled");
+  } else {
+    Serial.print(" . Compat mode disabled");
+  }
+
 }
